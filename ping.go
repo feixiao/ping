@@ -9,6 +9,7 @@ package ping
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"time"
@@ -87,25 +88,28 @@ func parseICMPMessage(b []byte) (*icmpMessage, error) {
 
 // imcpEcho represenets an ICMP echo request or reply message body.
 type icmpEcho struct {
-	ID   int    // identifier
-	Seq  int    // sequence number
-	Data []byte // data
+	ID        int       // identifier
+	Seq       int       // sequence number
+	Timestamp time.Time // time stamp
+	Data      []byte    // data
 }
 
 func (p *icmpEcho) Len() int {
 	if p == nil {
 		return 0
 	}
-	return 4 + len(p.Data)
+	return 19 + len(p.Data)
 }
 
 // Marshal returns the binary enconding of the ICMP echo request or
 // reply message body p.
 func (p *icmpEcho) Marshal() ([]byte, error) {
-	b := make([]byte, 4+len(p.Data))
+	b := make([]byte, 19+len(p.Data))
 	b[0], b[1] = byte(p.ID>>8), byte(p.ID&0xff)
 	b[2], b[3] = byte(p.Seq>>8), byte(p.Seq&0xff)
-	copy(b[4:], p.Data)
+	timeencode, _ := time.Now().GobEncode()
+	copy(b[4:19], timeencode)
+	copy(b[19:], p.Data)
 	return b, nil
 }
 
@@ -113,9 +117,10 @@ func (p *icmpEcho) Marshal() ([]byte, error) {
 func parseICMPEcho(b []byte) (*icmpEcho, error) {
 	bodylen := len(b)
 	p := &icmpEcho{ID: int(b[0])<<8 | int(b[1]), Seq: int(b[2])<<8 | int(b[3])}
-	if bodylen > 4 {
-		p.Data = make([]byte, bodylen-4)
-		copy(p.Data, b[4:])
+	p.Timestamp.GobDecode(b[4:19])
+	if bodylen > 19 {
+		p.Data = make([]byte, bodylen-19)
+		copy(p.Data, b[19:])
 	}
 	return p, nil
 }
@@ -128,6 +133,7 @@ func Ping(address string, timeout int) bool {
 func Pinger(address string, timeout int) error {
 	c, err := net.Dial("ip4:icmp", address)
 	if err != nil {
+		fmt.Println("err hello")
 		return err
 	}
 	c.SetDeadline(time.Now().Add(time.Duration(timeout) * time.Second))
@@ -146,6 +152,7 @@ func Pinger(address string, timeout int) error {
 		return err
 	}
 	if _, err = c.Write(wb); err != nil {
+		fmt.Println("write err")
 		return err
 	}
 	var m *icmpMessage
@@ -158,6 +165,10 @@ func Pinger(address string, timeout int) error {
 		if m, err = parseICMPMessage(rb); err != nil {
 			return err
 		}
+		if v, ok := m.Body.(*icmpEcho); ok {
+			fmt.Println("rtt: ", time.Since(v.Timestamp))
+		}
+
 		switch m.Type {
 		case icmpv4EchoRequest, icmpv6EchoRequest:
 			continue
