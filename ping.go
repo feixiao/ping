@@ -22,6 +22,8 @@ const (
 	icmpv6EchoReply   = 129
 )
 
+var trans chan bool
+
 type icmpMessage struct {
 	Type     int             // type
 	Code     int             // code
@@ -130,7 +132,43 @@ func Ping(address string, timeout int) bool {
 	return err == nil
 }
 
+func newIcmpPacket(xseq int) (wb []byte, err error) {
+	typ := icmpv4EchoRequest
+	xid := os.Getpid() & 0xffff
+	wb, err = (&icmpMessage{
+		Type: typ, Code: 0,
+		Body: &icmpEcho{
+			ID: xid, Seq: xseq,
+			Data: bytes.Repeat([]byte("Go Go Gadget Ping!!!"), 3),
+		},
+	}).Marshal()
+	if err != nil {
+		return wb, err
+	}
+	return wb, err
+}
+
+func writeToRemote(c net.Conn) {
+	ticker := time.NewTicker(1 * time.Second)
+	xseq := 1
+	for {
+		<-trans
+		<-ticker.C
+		wb, err := newIcmpPacket(xseq)
+		if err != nil {
+			return
+		}
+
+		if _, err := c.Write(wb); err != nil {
+			fmt.Println("write err")
+			break
+		}
+		xseq++
+	}
+}
+
 func Pinger(address string, timeout int) error {
+	trans = make(chan bool, 1)
 	c, err := net.Dial("ip4:icmp", address)
 	if err != nil {
 		fmt.Println("err hello")
@@ -139,41 +177,30 @@ func Pinger(address string, timeout int) error {
 	c.SetDeadline(time.Now().Add(time.Duration(timeout) * time.Second))
 	defer c.Close()
 
-	typ := icmpv4EchoRequest
-	xid, xseq := os.Getpid()&0xffff, 1
-	wb, err := (&icmpMessage{
-		Type: typ, Code: 0,
-		Body: &icmpEcho{
-			ID: xid, Seq: xseq,
-			Data: bytes.Repeat([]byte("Go Go Gadget Ping!!!"), 3),
-		},
-	}).Marshal()
-	if err != nil {
-		return err
-	}
-	if _, err = c.Write(wb); err != nil {
-		fmt.Println("write err")
-		return err
-	}
+	go writeToRemote(c)
+
 	var m *icmpMessage
-	rb := make([]byte, 20+len(wb))
+	wb, _ := newIcmpPacket(0) //  to get send number of byte , for read .
+	rb := make([]byte, len(wb))
 	for {
+		trans <- true
 		if _, err = c.Read(rb); err != nil {
+			fmt.Println("read err")
 			return err
 		}
-		rb = ipv4Payload(rb)
-		if m, err = parseICMPMessage(rb); err != nil {
+		ipb := ipv4Payload(rb)
+		if m, err = parseICMPMessage(ipb); err != nil {
 			return err
 		}
 		if v, ok := m.Body.(*icmpEcho); ok {
-			fmt.Println("rtt: ", time.Since(v.Timestamp))
+			fmt.Printf("seq: %d   rtt: %v\n", v.Seq, time.Since(v.Timestamp))
 		}
 
 		switch m.Type {
 		case icmpv4EchoRequest, icmpv6EchoRequest:
 			continue
 		}
-		break
+		//break
 	}
 	return nil
 }
