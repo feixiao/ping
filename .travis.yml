@@ -1,6 +1,6 @@
 language: go
 go:
-    -tip
+    - tip
 notifications:
     email:
         on_success: change
