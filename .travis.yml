@@ -2,7 +2,7 @@ language: go
 sudo: required
 go:
     - tip
-script: su - root
+script: sudo go test ./..
 notifications:
     email:
         on_success: change
