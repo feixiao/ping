@@ -2,7 +2,11 @@ language: go
 sudo: required
 go:
     - tip
-script: sudo go test ./..
+script: 
+    - PATH=$GOROOT:$PATH
+    - sudo go test ./..
+
+
 notifications:
     email:
         on_success: change
