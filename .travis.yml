@@ -3,7 +3,7 @@ sudo: required
 go:
     - tip
 script: 
-    - PATH=$GOROOT:$PATH
+    - PATH=$GOROOT/bin:$PATH
     - sudo go test ./..
 
 
