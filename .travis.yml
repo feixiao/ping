@@ -2,7 +2,7 @@ language: go
 sudo: required
 go:
     - tip
-script: sudo env "PATH=$PATH" go test ./... 
+script: sudo  -E env "PATH=$PATH" go test ./... 
 
 
 notifications:
