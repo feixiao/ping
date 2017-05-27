@@ -23,4 +23,6 @@ func TestPingInfo(t *testing.T){
 
 	t.Log(stats)
 
+	t.Log(p.PacketLoss())
+
 }

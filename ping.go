@@ -279,6 +279,11 @@ func (p *Pinger)ping(address string, timeout time.Duration)(error,[]*Stat){
 	p.cancel()
 	return err,p.Stats
 }
+// 全部发送的包个数，丢包个数，丢包率
+func  (p *Pinger)PacketLoss()(int, int,float32){
+	lost := p.Count- p.Statistic
+	return p.Count, lost,float32(lost) / float32(p.Count)
+}
 
 func ipv4Payload(b []byte) []byte {
 	if len(b) < 20 {
