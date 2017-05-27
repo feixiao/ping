@@ -2,12 +2,25 @@ package ping
 
 import (
 	"testing"
+	"time"
 )
 
-func TestPing(t *testing.T) {
-	if istrue := Ping("127.0.0.1", 10); !istrue {
+func TestBasicPing(t *testing.T) {
+	if istrue := Ping("www.baidu.com", 1*time.Second); !istrue {
 		t.Error("ping is failed")
 	} else {
 		t.Log("ping is ok")
 	}
+}
+
+func TestPingInfo(t *testing.T){
+	p := NewPinger(4,50*time.Millisecond,100)
+
+	err,stats := p.ping("www.baidu.com", 1*time.Second)
+	if err !=nil {
+		t.Error(err)
+	}
+
+	t.Log(stats)
+
 }

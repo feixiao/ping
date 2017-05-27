@@ -9,10 +9,12 @@ package ping
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"net"
 	"os"
 	"time"
+	lg "github.com/feixiao/log4go"
+	"context"
+	"fmt"
 )
 
 const (
@@ -20,9 +22,9 @@ const (
 	icmpv4EchoReply   = 0
 	icmpv6EchoRequest = 128
 	icmpv6EchoReply   = 129
-)
 
-var trans chan bool
+	icmpMaxPacketSize = 1024
+)
 
 type icmpMessage struct {
 	Type     int             // type
@@ -127,19 +129,21 @@ func parseICMPEcho(b []byte) (*icmpEcho, error) {
 	return p, nil
 }
 
-func Ping(address string, timeout int) bool {
-	err := Pinger(address, timeout)
+func Ping(address string, timeout time.Duration) bool {
+	//var p Pinger
+	p:=NewPinger(1,200*time.Millisecond,128)
+	err,_:= p.ping(address, timeout)
 	return err == nil
 }
 
-func newIcmpPacket(xseq int) (wb []byte, err error) {
+func newIcmpPacket(xseq int,data []byte) (wb []byte, err error) {
 	typ := icmpv4EchoRequest
 	xid := os.Getpid() & 0xffff
 	wb, err = (&icmpMessage{
 		Type: typ, Code: 0,
 		Body: &icmpEcho{
 			ID: xid, Seq: xseq,
-			Data: bytes.Repeat([]byte("Go Go Gadget Ping!!!"), 3),
+			Data: data,
 		},
 	}).Marshal()
 	if err != nil {
@@ -148,61 +152,132 @@ func newIcmpPacket(xseq int) (wb []byte, err error) {
 	return wb, err
 }
 
-func writeToRemote(c net.Conn) {
-	ticker := time.NewTicker(1 * time.Second)
-	xseq := 1
-	for {
-		<-trans
-		<-ticker.C
-		wb, err := newIcmpPacket(xseq)
-		if err != nil {
-			return
-		}
-
-		if _, err := c.Write(wb); err != nil {
-			fmt.Println("write err")
-			break
-		}
-		xseq++
-	}
+/***********************************************************************************************************************************************************/
+type Stat struct {
+	Seq 	 int
+	Rtt      time.Duration
+	DataSize int
 }
 
-func Pinger(address string, timeout int) error {
-	trans = make(chan bool, 1)
-	c, err := net.Dial("ip4:icmp", address)
+func (s *Stat) String() string {
+	return fmt.Sprintf("size: %d seq: %d   rtt: %v\n",s.DataSize,s.Seq,s.Rtt)
+}
+
+type Pinger struct {
+	Count		int 		// ping的次数
+	Duration 	time.Duration	// 每个ICMP包发送的间隔
+	DataSize	int 		// 发送的包大小
+	Statistic 	int		// 接受的到的数据包
+	Address         string		// 目标地址
+
+	Stats		[]*Stat		// 每个ICMP包的统计信息
+	Timeout		time.Duration	// socket读超时
+
+	ctx 		context.Context 	// goroutine上下文管理
+	cancel		context.CancelFunc	// 通知相关goroutine退出
+	readyChan	chan bool		// 同步发送和接受数据
+
+	LastErr 	error			// 最后错误值
+}
+
+
+
+func NewPinger(cnt int,duration time.Duration,dataSize int ) *Pinger {
+	p := &Pinger{
+		Count : cnt,
+		Duration  : duration,
+		DataSize : dataSize,
+		readyChan : make(chan bool,1),
+	}
+	return p;
+}
+
+func (p *Pinger)writeToRemote(c net.Conn,xseq int ) error {
+
+	c.SetWriteDeadline(time.Now().Add(p.Timeout))
+	data:=bytes.Repeat([]byte{1},p.DataSize)
+	wb, err := newIcmpPacket(xseq,data)
 	if err != nil {
-		fmt.Println("err hello")
 		return err
 	}
-	c.SetDeadline(time.Now().Add(time.Duration(timeout) * time.Second))
-	defer c.Close()
+	lg.Info("wbSize : %d",len(wb))
+	if _, err := c.Write(wb); err != nil {
+		return err
+	}
+	return nil
+}
 
-	go writeToRemote(c)
-
+func (p *Pinger) recvFromRemote(c net.Conn) {
+	var err error
 	var m *icmpMessage
-	wb, _ := newIcmpPacket(0) //  to get send number of byte , for read .
-	rb := make([]byte, len(wb))
+	rb := make([]byte, icmpMaxPacketSize)
+	var n int
+
+	p.readyChan <- true
 	for {
-		trans <- true
-		if _, err = c.Read(rb); err != nil {
-			fmt.Println("read err")
-			return err
+		select {
+		case <- p.ctx.Done():
+			lg.Info("recvFromRemote is canceled！");
+			return
+		default:
+
+		}
+
+		c.SetReadDeadline(time.Now().Add(p.Timeout))
+		if n, err = c.Read(rb); err != nil {
+			p.LastErr = err
+			return
 		}
 		ipb := ipv4Payload(rb)
 		if m, err = parseICMPMessage(ipb); err != nil {
-			return err
+			p.LastErr = err
+			lg.Error(err)
+			return
 		}
 		if v, ok := m.Body.(*icmpEcho); ok {
-			fmt.Printf("seq: %d   rtt: %v\n", v.Seq, time.Since(v.Timestamp))
+			lg.Info("bsize: %d seq: %d   rtt: %v\n",n,v.Seq, time.Since(v.Timestamp))
+			s := &Stat{
+				DataSize:n,
+				Seq:v.Seq,
+				Rtt:time.Since(v.Timestamp),
+			}
+			p.Stats = append(p.Stats,s)
+			p.Statistic ++
 		}
 
 		switch m.Type {
 		case icmpv4EchoRequest, icmpv6EchoRequest:
 			continue
 		}
-		//break
 	}
-	return nil
+}
+
+
+
+func (p *Pinger)ping(address string, timeout time.Duration)(error,[]*Stat){
+	c, err := net.Dial("ip4:icmp", address)
+	if err != nil {
+		lg.Error(err)
+		return err,nil
+	}
+	p.Address = address
+	p.Timeout = timeout
+	defer c.Close()
+
+	p.ctx, p.cancel = context.WithCancel(context.Background())
+
+	//go p.writeToRemote(c)
+	go p.recvFromRemote(c)
+	<- p.readyChan
+
+	for i:=0;i< p.Count; i++ {
+		lg.Info(i)
+		p.writeToRemote(c,i)
+		time.Sleep(p.Duration)
+	}
+
+	p.cancel()
+	return err,p.Stats
 }
 
 func ipv4Payload(b []byte) []byte {
